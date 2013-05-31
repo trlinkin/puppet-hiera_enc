@@ -1,45 +1,24 @@
-require 'puppet'
-require 'puppet/node'
-require 'puppet/indirector/plain'
-require 'rubygems'
-require 'hiera'
-require 'hiera/scope'
+require 'hiera_puppet'
 
 class Puppet::Node::Hiera < Puppet::Indirector::Plain
 
   desc "Classify nodes in Hiera via discovered context derived from the Certificate Name"
-  include Puppet::Util
 
-  # Look for external node definitions.
+  # Look for external node definitions
   def find(request)
     node = super or return nil
-
-    setup_hiera()
 
     populate_node(request.key, node)
   end
 
   private
 
-  # init Hiera
-  def setup_hiera()
-    configfile = File.join([File.dirname(Puppet.settings[:config]), "hiera.yaml"])
-
-    raise "Hiera config file #{configfile} not readable" unless File.exist?(configfile)
-    raise "You need rubygems to use Hiera" unless Puppet.features.rubygems?
-
-    config = YAML.load_file(configfile)
-    config[:logger] = "puppet"
-
-    @hiera = Hiera.new(:config => config)
-  end
-
-  # pull in scoped Hiera results
+  # Populate our node with Hiera results
   def populate_node(key, node)
-    hscope = populate_scope(key, node)
+    cert_scope = create_cert_scope(key, node)
 
-    # get classes
-    classes = @hiera.lookup('classes', nil, hscope, nil, :hash) || {}
+    # Search for classes
+    classes = HieraPuppet.lookup('classes', nil, cert_scope, nil, :hash) || {}
 
     # translate namespace resolution operators
     classes.each do |k,v|
@@ -49,31 +28,28 @@ class Puppet::Node::Hiera < Puppet::Indirector::Plain
 
     # put the things Hiera discovered into our node
     node.classes     = classes
-    node.parameters  = @hiera.lookup('parameters', nil, hscope, nil, :hash) || {}
+    node.parameters  = HieraPuppet.lookup('parameters', nil, cert_scope, nil, :hash) || {}
 
     # TODO: the Hiera lookup for this keeps failing.  debug it
     #node.environment = env if env
 
-    # merge new facts into existing facts
+    # merge new facts into existing facts - is this needed if we don't screw with facts?
     node.fact_merge
     node
   end
 
-  # create a new scope and populate it with facts pulled from the indirector
-  def populate_scope(key, node)
-    # create a new scope because i'm not sure if/how any existing scope
-    # for this node can be retreived
+  def create_cert_scope(key, node)
+    # Create new scope that will only be populated with data derived from tokenizing the certname
     scope = Puppet::Parser::Scope.new
 
-    # get facts from REST API, or empty hash
+    # Get Facts from Indirector
     facts = Puppet::Node::Facts.indirection.find(key).values rescue {}
 
-    # add node facts to our bootleg scope
+    # Add discovered context to our temporary scope
     facts.each do |fact, value|
       scope.setvar(fact, value)
     end
 
-    # return the Hierafied scope
-    Hiera::Scope.new(scope)
+    scope
   end
 end
